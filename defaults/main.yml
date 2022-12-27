@@ -1,0 +1,15 @@
+---
+# System preparation
+time_zone: 'Europe/Moscow'
+ansible_ssh_host: '192.168.0.105'
+
+# MariaDB
+mariadb_root_password: 'P@ssw0rd'
+
+# Asterisk
+url_asterisk: 'http://downloads.asterisk.org/pub/telephony/asterisk/asterisk-16-current.tar.gz'
+path_download: '/root'
+
+# FreePBX
+url_freepbx: 'http://mirror.freepbx.org/modules/packages/freepbx/freepbx-15.0-latest.tgz'
+download_path: '/root'

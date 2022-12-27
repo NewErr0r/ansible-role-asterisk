@@ -1,0 +1,12 @@
+---
+php_packages: 
+  - php 
+  - php-fpm 
+  - php-bcmath 
+  - php-gd 
+  - php-json 
+  - php-mbstring 
+  - php-mysqlnd 
+  - php-pear 
+  - php-snmp 
+  - php-zip

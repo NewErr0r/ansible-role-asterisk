@@ -1,0 +1,279 @@
+---
+- name: System preparation | Setting the time zone
+  community.general.timezone:
+    name: '{{ time_zone }}'
+
+- name: System preparation | Installing a service for time synchronization
+  dnf: 
+    name: chrony
+    state: latest
+  notify:
+    - Started and Enabled chronyd
+
+- name: System preparation | Configuring firewall ports
+  firewalld: 
+    port: '{{ item }}'
+    permanent: yes
+    state: enabled
+  loop: 
+    - 5060/tcp
+    - 5060/udp
+    - 5061/tcp
+    - 5061/udp
+    - 5160/udp
+  notify:
+    - Restarted firewalld
+
+- name: System preparation | Configuring firewall services
+  firewalld: 
+    service: '{{ item }}'
+    permanent: yes
+    state: enabled
+  loop: 
+    - http
+    - https
+  notify:
+    - Restarted firewalld
+
+- name: System preparation | Disable SELinux 
+  ansible.posix.selinux:
+    state: disabled
+
+- name: System preparation | Disable SELinux now
+  command: 
+    cmd: setenforce 0 
+  when: 
+    - ansible_selinux.status == "enabled"
+
+- name: System preparation | Installing Packages
+  dnf: 
+    name: 
+      - epel-release
+      - elrepo-release
+      - wget 
+      - tar 
+      - glibc-langpack-ru
+    state: latest
+
+- name: System preparation | Creating a user 'asterisk'
+  ansible.builtin.user:
+    name: asterisk
+
+- name: Configuring the Web Server | Installing the mariadb server
+  dnf:
+    name: 
+      - mariadb-server 
+      - mariadb
+      - python3-PyMySQL
+    state: latest
+
+- name: Configuring the Web Server | Started and Enabled MariaDB 
+  service: 
+    name: mariadb 
+    state: started 
+    enabled: true
+
+- name: Configuring the Web Server | Configure root password MariaDB
+  mysql_user:
+    check_implicit_admin: true
+    login_user: root 
+    login_password: "{{ mariadb_root_password }}"
+    user: root 
+    password: "{{ mariadb_root_password }}"
+    host: localhost
+
+- name: Configuring the Web Server | Install nginx
+  dnf: 
+    name: nginx 
+    state: latest
+  notify:
+    - Started and Enabled nginx
+
+- name: Configuring the Web Server | Install the php interpreter and the components necessary for FreePBX to work
+  dnf: 
+    name: '{{ php_packages }}'
+    state: latest
+
+- name: Configuring the Web Server | Disabled htppd
+  service: 
+    name: httpd
+    enabled: false
+    state: stopped
+
+- name: Configuring the Web Server | Setting php.ini
+  lineinfile:
+    dest: '/etc/php.ini'
+    regexp: '{{ item.regexp }}'
+    line: '{{ item.line }}'
+  loop:
+    - { regexp: '^;date.timezone =', line: 'date.timezone = "Europe/Moscow"' }
+    - { regexp: '^post_max_size = 8M', line: 'post_max_size = 128M' }
+    - { regexp: '^upload_max_filesize = 2M', line: 'upload_max_filesize = 128M' }
+    - { regexp: '^memory_limit = 128M', line: 'memory_limit = 512M' }
+
+- name: Configuring the Web Server | Setting php-fpm
+  lineinfile:
+    dest: '/etc/php-fpm.d/www.conf'
+    regexp: '{{ item.regexp }}'
+    line: '{{ item.line }}'
+  loop:
+    - { regexp: '^user = apache', line: 'user = asterisk' }
+    - { regexp: '^group = apache', line: 'group = asterisk' }
+    - { regexp: '^listen.acl_users = apache,nginx', line: 'listen.acl_users = asterisk,apache,nginx' }
+  notify:
+    - Started and Enabled php-fpm
+
+#- name: Configuring the Web Server | NGINX + PHP
+#  lineinfile:
+#    dest: '/etc/nginx/nginx.conf'
+#    regexp: '^        server_name'
+#    line: '        server_name  {{ ansible_ssh_host }};'
+#
+#- name: Configuring the Web Server | NGINX + PHP
+#  lineinfile:
+#    dest: '/etc/nginx/nginx.conf'
+#    regexp: '^        location / {'
+#    line: '{{ item }}'
+#  loop:
+#    - '        location ~ \.php$ {'
+#    - '            set $root_path /usr/share/nginx/html;'
+#    - '            fastcgi_pass unix:/run/php-fpm/www.sock;'
+#    - '            fastcgi_index index.php;'
+#    - '            include fastcgi_params;'
+#    - '            fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;'
+#    - '            fastcgi_param PATH_INFO $fastcgi_path_info;'
+#    - '            fastcgi_param PATH_TRANSLATED $document_root$fastcgi_path_info;'
+#    - '            fastcgi_param SERVER_NAME $host;'
+#    - '        }'
+
+- name: Configuring the Web Server | NGINX + PHP
+  template: 
+    src: nginx.conf.j2
+    dest: /etc/nginx/nginx.conf
+  notify:
+    - Restarted nginx
+
+- name: Configuring the Web Server | Install NodeJS
+  dnf: 
+    name: nodejs
+    state: latest
+
+- name: Configuring the Web Server | check if CentOS PowerTools repo enabled
+  shell: /usr/bin/dnf -q repolist --enabled PowerTools && echo disabled || echo enabled
+  register: powertools
+
+- name: Install Asterisk | Install the packages required for the build
+  command: 
+    cmd: dnf --enablerepo=powertools install libedit-devel -y
+  when: powertools.stdout == "disabled"
+
+- name: Install Asterisk | Download Asterisk
+  get_url:
+    url: '{{ url_asterisk }}'
+    dest: '{{ path_download }}'
+  register: check_version
+
+- name: Install Asterisk | Unpacking the archive
+  command: 
+    cmd: tar -xvf {{ check_version.dest }}
+    chdir: '{{ path_download }}'
+    creates: '{{ path_download }}/asterisk-16.29.1'
+
+- name: Install Asterisk | Installing dependencies
+  command: 
+    cmd: ./contrib/scripts/install_prereq install
+    chdir: '{{ path_download }}/asterisk-16.29.1'
+    
+- name: Install Asterisk | Cleaning temporary files
+  command: 
+    cmd: make distclean
+    chdir: '{{ path_download }}/asterisk-16.29.1'
+
+- name: Install Asterisk | Adding a library for working with mp3
+  command: 
+    cmd: ./contrib/scripts/get_mp3_source.sh
+    chdir: '{{ path_download }}/asterisk-16.29.1'
+
+- name: Install Asterisk | Configuring the source code
+  command: 
+    cmd: ./configure
+    chdir: '{{ path_download }}/asterisk-16.29.1'
+
+- name: Install Asterisk | Asterisk assembly
+  command: 
+    cmd: make
+    chdir: '{{ path_download }}/asterisk-16.29.1'
+
+- name: Install Asterisk | Install Asterisk
+  command: 
+    cmd: make install
+    chdir: '{{ path_download }}/asterisk-16.29.1'
+
+- name: Install Asterisk | Install scripts for automatic start of the PBX
+  command: 
+    cmd: '{{ item }}'
+    chdir: '{{ path_download }}/asterisk-16.29.1'
+  loop: 
+    - make config
+    - make samples
+
+- name: Install Asterisk | Setting asterisk.conf
+  lineinfile:
+    dest: '/etc/asterisk/asterisk.conf'
+    regexp: '{{ item.regexp }}'
+    line: '{{ item.line }}'
+  loop:
+    - { regexp: '^;runuser = asterisk', line: 'runuser = asterisk' }
+    - { regexp: '^;rungroup = asterisk', line: 'rungroup = asterisk' }
+    - { regexp: '^;defaultlanguage = en', line: 'defaultlanguage = ru' }
+    - { regexp: '^documentation_language = en_US', line: 'documentation_language = ru_RU' }
+
+- name: Install Asterisk | Granting rights to the project "/var/run/asterisk"
+  file:
+    path: "{{ item }}"
+    state: directory
+    recurse: yes
+    owner: asterisk
+    group: asterisk
+  loop: 
+    - /var/run/asterisk
+    - /etc/asterisk
+    - /var/lib/asterisk
+    - /var/log/asterisk
+    - /var/spool/asterisk
+    - /var/log/asterisk
+
+- name: Install Asterisk | Started and Enabled Asterisk
+  service: 
+    name: asterisk
+    enabled: true 
+    state: started
+
+- name: Install FreePBX | Install the packages
+  dnf:
+    name:
+      - sox 
+      - mpg123
+    state: latest
+
+- name: Install FreePBX | Download the asterisk management portal
+  get_url:
+    url: '{{ url_freepbx }}'
+    dest: '{{ download_path }}'
+  register: check_version_freepbx
+
+- name: Install FreePBX | Unpacking the archive
+  command: 
+    cmd: tar -xvf {{ check_version_freepbx.dest }}
+    chdir: '{{ download_path }}'
+    creates: '{{ download_path }}/freepbx'
+
+- name: Install FreePBX | Run the Asterisk test script
+  command: 
+    cmd: ./start_asterisk start
+    chdir: '{{ download_path }}/freepbx'
+
+- name: Install FreePBX | Starting the installation
+  command: 
+    cmd: ./install -n --dbuser root --dbpass {{ mariadb_root_password }} --webroot=/usr/share/nginx/html
+    chdir: '{{ download_path }}/freepbx'
